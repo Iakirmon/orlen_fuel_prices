@@ -17,9 +17,7 @@ jobs:
       - name: Pobierz ceny paliw ORLEN i wyślij powiadomienie
         env:
           # Sekrety dodajesz w repo → Settings → Secrets and variables → Actions
-          NTFY_URL: ${{ secrets.NTFY_URL }}      # np. https://ntfy.sh/paliwa
-          NTFY_USER: ${{ secrets.NTFY_USER }}    # (opcjonalnie)
-          NTFY_PASS: ${{ secrets.NTFY_PASS }}    # (opcjonalnie)
+          NTFY_URL: https://ntfy.sh/paliwa
         run: |
           set -e
 
