@@ -1,0 +1,56 @@
+name: Orlen fuel prices → ntfy.sh
+
+on:
+  schedule:
+    # 05:00 UTC = 07:00 Europe/Warsaw (czas letni)
+    - cron: '0 5 * * *'
+  workflow_dispatch: {}   # pozwala uruchomić ręcznie
+
+jobs:
+  fuel-prices:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Zainstaluj jq
+        run: sudo apt-get update && sudo apt-get -y install jq
+
+      - name: Pobierz ceny paliw ORLEN i wyślij powiadomienie
+        env:
+          # Sekrety dodajesz w repo → Settings → Secrets and variables → Actions
+          NTFY_URL: ${{ secrets.NTFY_URL }}      # np. https://ntfy.sh/paliwa
+          NTFY_USER: ${{ secrets.NTFY_USER }}    # (opcjonalnie)
+          NTFY_PASS: ${{ secrets.NTFY_PASS }}    # (opcjonalnie)
+        run: |
+          set -e
+
+          # 1. Pobierz hurtowe ceny paliw
+          DATA="$(curl -s https://tool.orlen.pl/api/wholesalefuelprices)"
+          # Struktura: [{productName:"Pb95", value:4570.0, ...}, …] :contentReference[oaicite:0]{index=0}
+
+          # 2. Wyłuskaj interesujące produkty (wartości w zł/m³ netto)
+          pb95=$(echo "$DATA" | jq -r '.[] | select(.productName=="Pb95") | .value')
+          pb98=$(echo "$DATA" | jq -r '.[] | select(.productName=="Pb98") | .value')
+          on=$(echo "$DATA"   | jq -r '.[] | select(.productName=="ON")   | .value // empty')
+          lpg=$(echo "$DATA"  | jq -r '.[] | select(.productName=="GPL")  | .value // empty')
+
+          # 3. Sformatuj wiadomość
+          today=$(date +'%Y-%m-%d')
+          msg="Ceny hurtowe ORLEN – $today
+          Pb95: ${pb95} zł/m³
+          Pb98: ${pb98} zł/m³
+          ON:   ${on:-brak} zł/m³
+          LPG:  ${lpg:-brak} zł/m³"
+
+          # 4. Wyślij do ntfy (Basic Auth jeśli podano użytkownika/hasło)
+          if [[ -n "$NTFY_USER" && -n "$NTFY_PASS" ]]; then
+            curl -u "$NTFY_USER:$NTFY_PASS" \
+                 -H "Title: Ceny paliw ORLEN" \
+                 -H "Priority: 3" \
+                 -d "$msg" \
+                 "$NTFY_URL"
+          else
+            curl -H "Title: Ceny paliw ORLEN" \
+                 -H "Priority: 3" \
+                 -d "$msg" \
+                 "$NTFY_URL"
+          fi
