@@ -1,60 +1,58 @@
-name: Orlen fuel prices → ntfy.sh
+name: ORLEN retail fuel prices → ntfy.sh
 
 on:
   schedule:
-    # 05:00 UTC = 07:00 Europe/Warsaw (czas letni)
+    # 05:00 UTC ≙ 07:00 Europe/Warsaw (czas letni)
     - cron: '0 5 * * *'
-  workflow_dispatch: {}
+  workflow_dispatch: {}   # pozwala uruchomić ręcznie z karty Actions
 
 jobs:
-  fuel-prices:
+  retail-prices:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Zainstaluj jq
+      - name: Zainstaluj narzędzia tekstowe
         run: sudo apt-get update && sudo apt-get -y install jq
 
-      - name: Pobierz ceny paliw ORLEN (netto zł/m³) i wyślij w zł/l
+      - name: Pobierz detaliczne ceny ORLEN i wyślij powiadomienie
         env:
           NTFY_URL: https://ntfy.sh/paliwa
+        shell: bash
         run: |
-          set -e
+          set -euo pipefail
 
-          # 1. API ORLEN – ceny hurtowe (netto, zł/m³)
-          DATA="$(curl -s https://tool.orlen.pl/api/wholesalefuelprices)"
+          # 1) Pobierz kod HTML strony AutoCentrum z cenami ORLEN
+          PAGE=$(curl -fsSL 'https://www.autocentrum.pl/stacje-paliw/pkn-orlen/')
 
-          # 2. Pobierz wartości i przelicz na zł/l (1 m³ = 1000 litrów)
-          get_liter_price () {
-            local product="$1"
-            local raw=$(echo "$DATA" | jq -r --arg p "$product" '.[] | select(.productName==$p) | .value')
-            if [[ -n "$raw" && "$raw" != "null" ]]; then
-              # awk → zaokrąglenie do dwóch miejsc
-              awk "BEGIN {printf \"%.2f\", $raw/1000}"
-            else
-              echo "brak"
-            fi
+          # 2) Funkcja pomocnicza: wyciągnij pierwszą liczbę z danej sekcji
+          extract_price () {  # $1 = wzorzec (pb|pb\+|on\b|on\+|lpg)
+            echo "$PAGE" \
+              | awk -v RS='<[^>]*>' '{gsub(/&nbsp;| /,""); if ($0 ~ /'$1'/) {getline; print; exit}}' \
+              | grep -oE '[0-9],[0-9]{2}'
           }
 
-          pb95=$(get_liter_price "Pb95")
-          pb98=$(get_liter_price "Pb98")
-          on=$(get_liter_price "ON")
-          lpg=$(get_liter_price "GPL")
+          PB95=$(extract_price 'pb[^a-z]')   # „pb” (95)
+          PB98=$(extract_price 'pb\+')       # „pb+” (Verva 98)
+          ON=$(extract_price  'on[^a-z]')    # „on”  (Ekodiesel)
+          ONPLUS=$(extract_price 'on\+')     # „on+” (Verva ON)
+          LPG=$(extract_price  'lpg')        # „lpg”
 
-          # 3. Zbuduj wiadomość
-          today=$(date +'%Y-%m-%d')
-          msg="Ceny hurtowe ORLEN – ${today}
-          Pb95: ${pb95} zł/l
-          Pb98: ${pb98} zł/l
-          ON:   ${on} zł/l
-          LPG:  ${lpg} zł/l"
+          # 3) Zbuduj treść powiadomienia
+          TODAY=$(date +'%Y-%m-%d')
+          MSG=$(cat <<EOF
+Średnie detaliczne ceny paliw – ORLEN (${TODAY})
+Pb95 : ${PB95} zł/l
+Pb98 : ${PB98:-brak} zł/l
+ON   : ${ON} zł/l
+ON+  : ${ONPLUS:-brak} zł/l
+LPG  : ${LPG:-brak} zł/l
+EOF
+          )
 
-          # 4. Wyślij ntfy (Basic Auth, jeśli podano login/hasło)
-          send_ntfy () {
-            curl \
-              ${NTFY_USER:+-u "$NTFY_USER:$NTFY_PASS"} \
-              -H "Title: Ceny paliw ORLEN (zł/l)" \
-              -H "Priority: 3" \
-              -d "$msg" \
-              "$NTFY_URL"
-          }
-          send_ntfy
+          # 4) Wyślij do ntfy.sh (z uwzględnieniem Basic Auth, jeśli skonfigurowano)
+          CURL_OPTS=(-H "Title: Ceny detaliczne ORLEN" -H "Priority: 3" -d "$MSG")
+          if [[ -n "${NTFY_USER:-}" && -n "${NTFY_PASS:-}" ]]; then
+            CURL_OPTS=(-u "${NTFY_USER}:${NTFY_PASS}" "${CURL_OPTS[@]}")
+          fi
+          curl -fsSL "${CURL_OPTS[@]}" "${NTFY_URL}"
+
